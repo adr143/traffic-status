@@ -43,7 +43,7 @@ class TrafficData(db.Model):
     pm2_5 = db.Column(db.Float, nullable=False)
     pm10 = db.Column(db.Float, nullable=False)
     noise_level = db.Column(db.Float, nullable=False)
-    co2 = db.Column(db.Float, nullable=False)
+    co = db.Column(db.Float, nullable=False)
     no2 = db.Column(db.Float, nullable=False)
     so2 = db.Column(db.Float, nullable=False)
     aqi = db.Column(db.String(20), nullable=False)
@@ -71,14 +71,14 @@ def pm25_to_aqi_category(pm25):
 
 # Params
 seq_length = 10  # Past time steps for prediction
-num_features = 6  # PM2.5, PM10, Noise_Level, CO2, NO2, SO2
+num_features = 6  # PM2.5, PM10, Noise_Level, CO, NO2, SO2
 
 def get_latest_data():
     """Retrieve the last 'seq_length' records from the database."""
     records = TrafficData.query.order_by(TrafficData.timestamp.desc()).limit(seq_length).all()
     if len(records) < seq_length:
         return np.zeros((seq_length, num_features))  # Return empty if not enough data
-    return np.array([[r.pm2_5, r.pm10, r.noise_level, r.co2, r.no2, r.so2] for r in reversed(records)])
+    return np.array([[r.pm2_5, r.pm10, r.noise_level, r.co, r.no2, r.so2] for r in reversed(records)])
 
 def predict_future(model, past_data, scaler, future_steps=5):
     """Future Forecast Prediction."""
@@ -104,7 +104,7 @@ def get_last_10_records():
             "pm2_5": record.pm2_5,
             "pm10": record.pm10,
             "noise_level": record.noise_level,
-            "co2": record.co2,
+            "co": record.co,
             "no2": record.no2,
             "so2": record.so2,
             "congestion": record.congestion,
@@ -151,7 +151,7 @@ def generate_forecast():
                         "pm2_5": latest_record.pm2_5,
                         "pm10": latest_record.pm10,
                         "noise_level": latest_record.noise_level,
-                        "co2": latest_record.co2,
+                        "co": latest_record.co,
                         "no2": latest_record.no2,
                         "so2": latest_record.so2,
                         "aqi": latest_record.aqi,
@@ -163,7 +163,7 @@ def generate_forecast():
             try:
                 new_data = np.array([
                     new_entry["pm2_5"], new_entry["pm10"], new_entry["noise_level"],
-                    new_entry["co2"], new_entry["no2"], new_entry["so2"], 
+                    new_entry["co"], new_entry["no2"], new_entry["so2"], 
                 ], dtype=float)  # ✅ Ensure values retain decimal precision
 
                 print(f"📊 New Sensor Data: {new_entry}")
@@ -178,7 +178,7 @@ def generate_forecast():
 
             db.session.add(TrafficData(
                 pm2_5=new_entry["pm2_5"], pm10=new_entry["pm10"], noise_level=new_entry["noise_level"],
-                co2=new_entry["co2"], no2=new_entry["no2"], so2=new_entry["so2"], aqi=pm25_to_aqi_category(new_entry["pm2_5"]),
+                co=new_entry["co"], no2=new_entry["no2"], so2=new_entry["so2"], aqi=pm25_to_aqi_category(new_entry["pm2_5"]),
                 congestion=first_congestion
             ))
             db.session.commit()
@@ -189,7 +189,7 @@ def generate_forecast():
                 "pm2_5": new_entry["pm2_5"],
                 "pm10": new_entry["pm10"],
                 "noise_level": new_entry["noise_level"],
-                "co2": new_entry["co2"],
+                "co": new_entry["co"],
                 "no2": new_entry["no2"],
                 "so2": new_entry["so2"],
                 "aqi": pm25_to_aqi_category(new_entry["pm2_5"]),
@@ -226,7 +226,7 @@ def get_records():
             "pm2_5": record.pm2_5,
             "pm10": record.pm10,
             "noise_level": record.noise_level,
-            "co2": record.co2,
+            "co": record.co,
             "no2": record.no2,
             "so2": record.so2,
             "aqi": record.aqi,
