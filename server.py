@@ -6,10 +6,14 @@ import joblib
 import time
 import json
 import serial
+import random
+import datetime
+from datetime import timedelta
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Disable TensorFlow OneDNN optimization for compatibility
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
@@ -19,7 +23,7 @@ forecast_model = tf.keras.models.load_model("forecast_lstm_model.keras")
 forecast_scaler = joblib.load("forecast_scaler.pkl")
 
 # Serial Configuration
-SERIAL_PORT = "COM9"
+SERIAL_PORT = "COM3"
 BAUD_RATE = 115200
 
 try:
@@ -49,6 +53,24 @@ class TrafficData(db.Model):
     aqi = db.Column(db.String(20), nullable=False)
     congestion = db.Column(db.Float, nullable=False)  # First predicted congestion value
     timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+class DailyRecord(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    pm2_5 = db.Column(db.Float, nullable=False)
+    pm10 = db.Column(db.Float, nullable=False)
+    noise_level = db.Column(db.Float, nullable=False)
+    co = db.Column(db.Float, nullable=False)
+    no2 = db.Column(db.Float, nullable=False)
+    so2 = db.Column(db.Float, nullable=False)
+
+    aqi = db.Column(db.String(20), nullable=False)
+    forecasted_congestion = db.Column(db.Text, nullable=True)
+
+    timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+
+    def get_congestion_list(self):
+        return json.loads(self.forecasted_congestion)
 
 with app.app_context():
     db.create_all()
@@ -199,11 +221,117 @@ def generate_forecast():
             # 🔥 Broadcast last 10 records
             broadcast_last_10_records()
 
-            socketio.emit("traffic-forecast", {"congestion": future_congestion.tolist()})
+            # socketio.emit("traffic-forecast", {"congestion": future_congestion.tolist()})
             print(f"✅ Stored & Sent forecast: {future_congestion}")
 
+def generate_pseudo_data():
+    """Generate and insert pseudo data if there are fewer than 10 records in DailyRecord."""
+    with app.app_context():
+        existing_records = DailyRecord.query.count()
 
+        if existing_records >= 10:
+            print("✅ Enough records available for forecasting.")
+            return
+
+        # If fewer than 10 records, generate pseudo data
+        print(f"⚠️ Only {existing_records} records. Generating pseudo data to fill up to 10 records.")
+        while existing_records < 10:
+            pseudo_data = DailyRecord(
+                pm2_5=random.uniform(10, 60),
+                pm10=random.uniform(20, 100),
+                noise_level=random.uniform(40, 90),
+                co=random.uniform(0.1, 2.0),
+                no2=random.uniform(5, 50),
+                so2=random.uniform(2, 40),
+                aqi=pm25_to_aqi_category(random.uniform(10, 60)),
+                forecasted_congestion=json.dumps([round(random.uniform(20, 80), 2) for _ in range(5)]),
+            )
+            db.session.add(pseudo_data)
+            db.session.commit()
+
+            # Increment the record count and loop again if needed
+            existing_records += 1
+
+def daily_forecast_job():
+    """Run daily forecast using DailyRecord data or fallback to pseudo data."""
+    generate_pseudo_data()  # Ensure at least 10 records are available
+
+    with app.app_context():
+
+        latest = TrafficData.query.order_by(TrafficData.timestamp.desc()).first()
+        if not latest:
+            print("⚠️ No data available for forecasting.")
+            return
+
+        new_record = DailyRecord(
+            pm2_5=latest.pm2_5 if latest else random.uniform(10, 60),
+            pm10=latest.pm10 if latest else random.uniform(20, 100),
+            noise_level=latest.noise_level if latest else random.uniform(40, 90),
+            co=latest.co if latest else random.uniform(0.1, 2.0),
+            no2=latest.no2 if latest else random.uniform(5, 50),
+            so2=latest.so2 if latest else random.uniform(2, 40),
+            aqi=pm25_to_aqi_category(latest.pm2_5 if latest else 35.0),
+            forecasted_congestion=json.dumps([round(random.uniform(20, 80), 2) for _ in range(5)]),
+        )
+
+        db.session.add(new_record)
+        db.session.commit()
+
+        records = DailyRecord.query.order_by(DailyRecord.timestamp.desc()).limit(10).all()
+
+        # Proceed with forecasting
+        if len(records) >= 10:
+            records_array = np.array([
+                [r.pm2_5, r.pm10, r.noise_level, r.co, r.no2, r.so2]
+                for r in sorted(records, key=lambda x: x.timestamp)
+            ])
+
+            future_congestion = predict_future(
+                model=forecast_model,
+                past_data=records_array,
+                scaler=forecast_scaler,
+                future_steps=5
+            )
+
+            future_congestion = np.clip(future_congestion * 100, 0, 100).tolist()
+            latest_record = DailyRecord.query.order_by(DailyRecord.timestamp.desc()).first()
+            if latest_record:
+                latest_record.forecasted_congestion = json.dumps(future_congestion)
+                db.session.commit()
+                print(f"✅ Updated forecasted congestion for the most recent record: {future_congestion}")
+        else:
+            # If still fewer than 10 after generation, create pseudo forecast
+            print("⚠️ Not enough DailyRecords after generation. Using pseudo forecast.")
+
+        print(f"✅ Daily forecast record added: {future_congestion}")
+
+
+def broadcast_daily_forecast():
+    """Broadcast the latest DailyRecord forecast every 5 seconds."""
+    while True:
+        time.sleep(5)
+        with app.app_context():
+            latest_daily = DailyRecord.query.order_by(DailyRecord.timestamp.desc()).first()
+            if latest_daily:
+                try:
+                    congestion_list = json.loads(latest_daily.forecasted_congestion)
+                    socketio.emit("traffic-forecast", {"congestion": congestion_list})
+                    print(f"📡 Sent daily forecast: {congestion_list}")
+                except json.JSONDecodeError:
+                    print("⚠️ Could not decode forecasted congestion list.")
+
+
+threading.Thread(target=broadcast_daily_forecast, daemon=True).start()
 threading.Thread(target=generate_forecast, daemon=True).start()
+
+scheduler = BackgroundScheduler()
+scheduler.start()
+
+scheduler.add_job(
+    daily_forecast_job,
+    trigger='cron',
+    hour=2, minute=30 # Change time as needed
+)
 
 @app.route("/records", methods=["GET"])
 def get_records():
@@ -211,7 +339,7 @@ def get_records():
     limit = request.args.get("limit", default=10, type=int)
     offset = request.args.get("offset", default=0, type=int)
 
-    query = TrafficData.query.order_by(TrafficData.timestamp.desc()).offset(offset)
+    query = DailyRecord.query.order_by(DailyRecord.timestamp.desc()).offset(offset)
     
     # If limit is explicitly 0 or not provided, fetch all records
     if limit == 0:
