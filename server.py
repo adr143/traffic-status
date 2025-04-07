@@ -3,11 +3,13 @@ import threading
 import numpy as np
 import tensorflow as tf
 import joblib
+import math
 import time
 import json
 import serial
 import random
 import datetime
+import pytz
 from datetime import timedelta
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO
@@ -17,6 +19,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 # Disable TensorFlow OneDNN optimization for compatibility
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
+local_tz = pytz.timezone("Asia/Manila")
 
 # Load Forecast Model and Scaler
 forecast_model = tf.keras.models.load_model("forecast_lstm_model.keras")
@@ -52,7 +56,7 @@ class TrafficData(db.Model):
     so2 = db.Column(db.Float, nullable=False)
     aqi = db.Column(db.String(20), nullable=False)
     congestion = db.Column(db.Float, nullable=False)  # First predicted congestion value
-    timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.datetime.now(local_tz))
 
 class DailyRecord(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -66,7 +70,7 @@ class DailyRecord(db.Model):
     aqi = db.Column(db.String(20), nullable=False)
     forecasted_congestion = db.Column(db.Text, nullable=True)
 
-    timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.datetime.now(local_tz))
 
 
     def get_congestion_list(self):
@@ -140,9 +144,20 @@ def broadcast_last_10_records():
     records = get_last_10_records()
     socketio.emit("traffic-history", {"records": records})
 
+def sound_db(input_value):
+    voltage = input_value * (5.0 / 1023.0);
+    dB = math.floor((voltage - 0.6) * 50);
+    return dB if dB > 0 else 0
+
+def is_on_the_hour():
+    now = datetime.datetime.now()
+    return now.minute == 43
+
 def generate_forecast():
     """Fetch serial data, predict congestion, save & broadcast updates."""
     global ser  # Allow reconnection to serial port if disconnected
+    new_record = False
+    records_timer = True
 
     while True:
         time.sleep(5)
@@ -157,10 +172,17 @@ def generate_forecast():
                     print("❌ Failed to reconnect. Using database records instead.")
                     ser = None  # Keep it None until reconnection succeeds
 
-            if ser and ser.in_waiting > 0:
+            if new_record != is_on_the_hour():
+                new_record = is_on_the_hour()  # Set timer to True if it's the top of the hour
+                if new_record:
+                    records_timer = False
+
+            if ser and ser.in_waiting > 0 and not records_timer:
                 try:
                     data = ser.readline().decode("utf-8").strip()
                     new_entry = json.loads(data)
+                    new_entry["noise_level"] = sound_db(new_entry["noise_level"])
+                    print(f"📡 Received serial data: {new_entry}")
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     print("⚠️ Warning: Malformed serial data. Skipping...")
                     continue
@@ -198,12 +220,14 @@ def generate_forecast():
             future_congestion = np.clip(future_congestion * 100, 0, 100)
             first_congestion = round(future_congestion[0], 2)
 
-            db.session.add(TrafficData(
-                pm2_5=new_entry["pm2_5"], pm10=new_entry["pm10"], noise_level=new_entry["noise_level"],
-                co=new_entry["co"], no2=new_entry["no2"], so2=new_entry["so2"], aqi=pm25_to_aqi_category(new_entry["pm2_5"]),
-                congestion=first_congestion
-            ))
-            db.session.commit()
+            if not records_timer:
+                db.session.add(TrafficData(
+                    pm2_5=new_entry["pm2_5"], pm10=new_entry["pm10"], noise_level=new_entry["noise_level"],
+                    co=new_entry["co"], no2=new_entry["no2"], so2=new_entry["so2"], aqi=pm25_to_aqi_category(new_entry["pm2_5"]),
+                    congestion=first_congestion
+                ))
+                db.session.commit()
+                records_timer = True
 
             # 🔥 Broadcast new single entry
             socketio.emit("traffic-params", {
@@ -330,7 +354,7 @@ scheduler.start()
 scheduler.add_job(
     daily_forecast_job,
     trigger='cron',
-    hour=2, minute=30 # Change time as needed
+    hour=3, minute=48 # Change time as needed
 )
 
 @app.route("/records", methods=["GET"])
@@ -339,7 +363,7 @@ def get_records():
     limit = request.args.get("limit", default=10, type=int)
     offset = request.args.get("offset", default=0, type=int)
 
-    query = DailyRecord.query.order_by(DailyRecord.timestamp.desc()).offset(offset)
+    query = TrafficData.query.order_by(TrafficData.timestamp.desc()).offset(offset)
     
     # If limit is explicitly 0 or not provided, fetch all records
     if limit == 0:
