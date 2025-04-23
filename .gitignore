@@ -1,0 +1,53 @@
+# Python bytecode files
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment directory
+venv/
+env/
+.venv/
+
+# IDE/Editor-specific files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Python distribution packages
+*.egg
+*.egg-info
+dist/
+build/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# SQLite database
+*.db
+
+# OS-specific files (macOS and Windows)
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.swp
+*.swo
+
+# Configuration files
+*.config
+*.json
+*.yml
+
+# Any specific data files you don't want tracked (e.g., for your project)
+instance/traffic_data_1.db
+instance/traffic_data.db
+
+# Git-specific files
+.gitmodules
+
+# Logs for Git operations (like gc.log)
+.git/gc.log
