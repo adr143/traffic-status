@@ -139,8 +139,14 @@ def predict_future(model, past_data, scaler, future_steps=5):
     """Future Forecast Prediction."""
     future_predictions = []
     input_seq = past_data.copy()
+    # If you fitted on a pandas DataFrame:
+    feature_names = scaler.feature_names_in_
+    print(feature_names)
+
+    #input_scaled = scaler.transform(input_seq)
 
     for _ in range(future_steps):
+        #pred = model.predict(input_scaled)
         pred = model.predict(input_seq.reshape(1, seq_length, num_features))
         future_predictions.append(pred[0, 0])
         input_seq = np.roll(input_seq, -1, axis=0)
@@ -180,7 +186,7 @@ def sound_db(input_value):
 
 def is_on_the_hour():
     now = datetime.datetime.now()
-    return now.minute == 0
+    return now.minute == 46 and now.second <=30
 
 def generate_forecast():
     """Fetch serial data, predict congestion, save & broadcast updates."""
@@ -247,12 +253,12 @@ def generate_forecast():
             past_data = get_latest_data()
             future_congestion = predict_future(forecast_model, past_data, forecast_scaler, future_steps=5)
             future_congestion = np.clip(future_congestion * 100, 0, 100)
-            first_congestion = round(future_congestion[0], 2)
+            first_congestion = round(future_congestion[3], 2)
 
             real_data = get_real_latest_data()
             real_congestion = predict_future(forecast_model, real_data, forecast_scaler, future_steps=5)
             real_congestion = np.clip(real_congestion * 100, 0, 100)
-            first_real_congestion = round(real_congestion[0], 2)
+            first_real_congestion = round(real_congestion[3], 2)
 
             db.session.add(TrafficLoggingData(
                     pm2_5=new_entry["pm2_5"], pm10=new_entry["pm10"], noise_level=new_entry["noise_level"],
@@ -261,6 +267,7 @@ def generate_forecast():
                 ))
 
             if not records_timer:
+                print("New Record")
                 db.session.add(TrafficData(
                     pm2_5=new_entry["pm2_5"], pm10=new_entry["pm10"], noise_level=new_entry["noise_level"],
                     co=new_entry["co"], no2=new_entry["no2"], so2=new_entry["so2"], aqi=pm25_to_aqi_category(new_entry["pm2_5"]),
@@ -301,12 +308,12 @@ def generate_pseudo_data():
         print(f"⚠️ Only {existing_records} records. Generating pseudo data to fill up to 10 records.")
         while existing_records < 10:
             pseudo_data = DailyRecord(
-                pm2_5=random.uniform(10, 60),
-                pm10=random.uniform(20, 100),
-                noise_level=random.uniform(40, 90),
-                co=random.uniform(0.1, 2.0),
-                no2=random.uniform(5, 50),
-                so2=random.uniform(2, 40),
+                pm2_5=random.uniform(0, 10),
+                pm10=random.uniform(0, 10),
+                noise_level=random.uniform(20, 50),
+                co=random.uniform(0.1, 1.0),
+                no2=random.uniform(0.1, 0.8),
+                so2=random.uniform(0.1, 0.9),
                 aqi=pm25_to_aqi_category(random.uniform(10, 60)),
                 forecasted_congestion=json.dumps([round(random.uniform(20, 80), 2) for _ in range(5)]),
             )
@@ -394,7 +401,7 @@ scheduler.start()
 scheduler.add_job(
     daily_forecast_job,
     trigger='cron',
-    hour=3, minute=24 # Change time as needed
+    hour=6, minute=00 # Change time as needed
 )
 
 @app.route("/records", methods=["GET"])
