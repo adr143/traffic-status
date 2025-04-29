@@ -403,7 +403,7 @@ scheduler.start()
 scheduler.add_job(
     daily_forecast_job,
     trigger='cron',
-    minute=0 # Change time as needed
+    minute=16 # Change time as needed
 )
 
 @app.route("/records", methods=["GET"])
@@ -419,6 +419,8 @@ def get_records():
         records = query.all()
     else:
         records = query.limit(limit).all()
+
+    
 
     return jsonify([
         {
