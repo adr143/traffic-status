@@ -139,22 +139,23 @@ def predict_future(model, past_data, scaler, future_steps=5):
     """Future Forecast Prediction."""
     future_predictions = []
     input_seq = past_data.copy()
+    input_seq = np.array(input_seq, dtype=np.float32)
     # If you fitted on a pandas DataFrame:
-    feature_names = scaler.feature_names_in_
-    print(feature_names)
-
     #input_scaled = scaler.transform(input_seq)
 
     for _ in range(future_steps):
         #pred = model.predict(input_scaled)
-        pred = model.predict(input_seq.reshape(1, seq_length, num_features))
-        future_predictions.append(pred[0, 0])
+        #scaled_seq = scaler.transform(input_seq)
+        pred = model.predict(input_seq.reshape(1, seq_length, -1))
+        scalar_pred = float(pred[0][0])
+        #pred = model.predict(scaled_seq)
+        #pred = scaler.inverse_transform(pred)
+        future_predictions.append(scalar_pred)
         input_seq = np.roll(input_seq, -1, axis=0)
-        input_seq[-1, -1] = pred[0, 0]
+        input_seq[-1, -1] = scalar_pred
+        input_seq[-1, :-1] = input_seq[-2, :-1]
 
-    future_scaled = np.zeros((future_steps, 7))
-    future_scaled[:, -1] = future_predictions
-    return scaler.inverse_transform(future_scaled)[:, -1]
+    return future_predictions
 
 def get_last_10_records():
     """Fetch last 10 records from the database."""
@@ -181,12 +182,12 @@ def broadcast_last_10_records():
 
 def sound_db(input_value):
     voltage = input_value * (5.0 / 1023.0);
-    dB = math.floor((voltage - 1.2) * 50);
+    dB = math.floor((voltage - 1.2) * 120);
     return dB if dB > 0 else 0
 
 def is_on_the_hour():
     now = datetime.datetime.now()
-    return now.minute == 46 and now.second <=30
+    return now.minute == 8 and now.second <=10
 
 def generate_forecast():
     """Fetch serial data, predict congestion, save & broadcast updates."""
@@ -217,6 +218,7 @@ def generate_forecast():
                     data = ser.readline().decode("utf-8").strip()
                     new_entry = json.loads(data)
                     new_entry["noise_level"] = sound_db(new_entry["noise_level"])
+                    new_entry["co"] = new_entry["co"]/2
                     print(f"📡 Received serial data: {new_entry}")
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     print("⚠️ Warning: Malformed serial data. Skipping...")
@@ -252,13 +254,13 @@ def generate_forecast():
 
             past_data = get_latest_data()
             future_congestion = predict_future(forecast_model, past_data, forecast_scaler, future_steps=5)
-            future_congestion = np.clip(future_congestion * 100, 0, 100)
-            first_congestion = round(future_congestion[3], 2)
+            future_congestion = [conge for conge in future_congestion]
+            first_congestion = future_congestion[0]
 
             real_data = get_real_latest_data()
             real_congestion = predict_future(forecast_model, real_data, forecast_scaler, future_steps=5)
-            real_congestion = np.clip(real_congestion * 100, 0, 100)
-            first_real_congestion = round(real_congestion[3], 2)
+            real_congestion = [conge for conge in real_congestion]
+            first_real_congestion = real_congestion[0]
 
             db.session.add(TrafficLoggingData(
                     pm2_5=new_entry["pm2_5"], pm10=new_entry["pm10"], noise_level=new_entry["noise_level"],
@@ -325,11 +327,11 @@ def generate_pseudo_data():
 
 def daily_forecast_job():
     """Run daily forecast using DailyRecord data or fallback to pseudo data."""
-    generate_pseudo_data()  # Ensure at least 10 records are available
+    #generate_pseudo_data()  # Ensure at least 10 records are available
 
     with app.app_context():
 
-        latest = TrafficData.query.order_by(TrafficData.timestamp.desc()).first()
+        latest = TrafficLoggingData.query.order_by(TrafficLoggingData.timestamp.desc()).first()
         if not latest:
             print("⚠️ No data available for forecasting.")
             return
@@ -364,7 +366,7 @@ def daily_forecast_job():
                 future_steps=5
             )
 
-            future_congestion = np.clip(future_congestion * 100, 0, 100).tolist()
+            future_congestion = [conge for conge in future_congestion]
             latest_record = DailyRecord.query.order_by(DailyRecord.timestamp.desc()).first()
             if latest_record:
                 latest_record.forecasted_congestion = json.dumps(future_congestion)
@@ -401,7 +403,7 @@ scheduler.start()
 scheduler.add_job(
     daily_forecast_job,
     trigger='cron',
-    hour=6, minute=00 # Change time as needed
+    minute=0 # Change time as needed
 )
 
 @app.route("/records", methods=["GET"])
@@ -410,7 +412,7 @@ def get_records():
     limit = request.args.get("limit", default=10, type=int)
     offset = request.args.get("offset", default=0, type=int)
 
-    query = TrafficData.query.order_by(TrafficData.timestamp.desc()).offset(offset)
+    query = DailyRecord.query.order_by(DailyRecord.timestamp.desc()).offset(offset)
     
     # If limit is explicitly 0 or not provided, fetch all records
     if limit == 0:
@@ -429,7 +431,7 @@ def get_records():
             "no2": record.no2,
             "so2": record.so2,
             "aqi": record.aqi,
-            "congestion": record.congestion
+            "congestion": [round(float(rec)*100, 2) for rec in record.forecasted_congestion.strip('[]').split(', ')]
         } for record in records
     ])
 
@@ -441,4 +443,4 @@ def handle_connect():
 
 if __name__ == "__main__":
     sync_time()
-    socketio.run(app, host="0.0.0.0", port=5000)
+    socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
