@@ -80,8 +80,7 @@ class DailyRecord(db.Model):
     co = db.Column(db.Float, nullable=False)
     no2 = db.Column(db.Float, nullable=False)
     so2 = db.Column(db.Float, nullable=False)
-
-    aqi = db.Column(db.String(20), nullable=False)
+    
     forecasted_congestion = db.Column(db.Text, nullable=True)
 
     timestamp = db.Column(db.DateTime, default=lambda: datetime.datetime.now(local_tz))
@@ -159,7 +158,7 @@ def predict_future(model, past_data, scaler, future_steps=5):
 
 def get_last_10_records():
     """Fetch last 10 records from the database."""
-    records = TrafficData.query.order_by(TrafficData.timestamp.desc()).limit(10).all()
+    records = TrafficLoggingData.query.order_by(TrafficLoggingData.timestamp.desc()).limit(10).all()
     return [
         {
             "timestamp": record.timestamp.isoformat(),
@@ -169,8 +168,7 @@ def get_last_10_records():
             "co": record.co,
             "no2": record.no2,
             "so2": record.so2,
-            "congestion": record.congestion,
-            "aqi": record.aqi,
+            "congestion": record.congestion
         }
         for record in reversed(records)  # Reverse for chronological order
     ]
@@ -185,15 +183,9 @@ def sound_db(input_value):
     dB = math.floor((voltage - 1.2) * 120);
     return dB if dB > 0 else 0
 
-def is_on_the_hour():
-    now = datetime.datetime.now()
-    return now.minute == 8 and now.second <=10
-
 def generate_forecast():
     """Fetch serial data, predict congestion, save & broadcast updates."""
     global ser  # Allow reconnection to serial port if disconnected
-    new_record = False
-    records_timer = True
 
     while True:
         time.sleep(5)
@@ -207,11 +199,6 @@ def generate_forecast():
                 except serial.SerialException:
                     print("❌ Failed to reconnect. Using database records instead.")
                     ser = None  # Keep it None until reconnection succeeds
-
-            if new_record != is_on_the_hour():
-                new_record = is_on_the_hour()  # Set timer to True if it's the top of the hour
-                if new_record:
-                    records_timer = False
 
             if ser and ser.in_waiting > 0:
                 try:
@@ -268,14 +255,6 @@ def generate_forecast():
                     congestion=first_real_congestion
                 ))
 
-            if not records_timer:
-                print("New Record")
-                db.session.add(TrafficData(
-                    pm2_5=new_entry["pm2_5"], pm10=new_entry["pm10"], noise_level=new_entry["noise_level"],
-                    co=new_entry["co"], no2=new_entry["no2"], so2=new_entry["so2"], aqi=pm25_to_aqi_category(new_entry["pm2_5"]),
-                    congestion=first_congestion
-                ))
-                records_timer = True
             db.session.commit()
 
             # 🔥 Broadcast new single entry
@@ -343,7 +322,6 @@ def daily_forecast_job():
             co=latest.co if latest else random.uniform(0.1, 2.0),
             no2=latest.no2 if latest else random.uniform(5, 50),
             so2=latest.so2 if latest else random.uniform(2, 40),
-            aqi=pm25_to_aqi_category(latest.pm2_5 if latest else 35.0),
             forecasted_congestion=json.dumps([round(random.uniform(20, 80), 2) for _ in range(5)]),
         )
 
@@ -403,7 +381,7 @@ scheduler.start()
 scheduler.add_job(
     daily_forecast_job,
     trigger='cron',
-    minute=16 # Change time as needed
+    minute=0  # Change time as needed
 )
 
 @app.route("/records", methods=["GET"])
@@ -413,14 +391,12 @@ def get_records():
     offset = request.args.get("offset", default=0, type=int)
 
     query = DailyRecord.query.order_by(DailyRecord.timestamp.desc()).offset(offset)
-    
+
     # If limit is explicitly 0 or not provided, fetch all records
     if limit == 0:
         records = query.all()
     else:
         records = query.limit(limit).all()
-
-    
 
     return jsonify([
         {
@@ -432,7 +408,6 @@ def get_records():
             "co": record.co,
             "no2": record.no2,
             "so2": record.so2,
-            "aqi": record.aqi,
             "congestion": [round(float(rec)*100, 2) for rec in record.forecasted_congestion.strip('[]').split(', ')]
         } for record in records
     ])

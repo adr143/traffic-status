@@ -26,28 +26,3 @@ build/
 # Logs
 *.log
 
-# SQLite database
-*.db
-
-# OS-specific files (macOS and Windows)
-.DS_Store
-Thumbs.db
-
-# Temporary files
-*.swp
-*.swo
-
-# Configuration files
-*.config
-*.json
-*.yml
-
-# Any specific data files you don't want tracked (e.g., for your project)
-instance/traffic_data_1.db
-instance/traffic_data.db
-
-# Git-specific files
-.gitmodules
-
-# Logs for Git operations (like gc.log)
-.git/gc.log
